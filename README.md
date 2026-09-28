@@ -1,30 +1,33 @@
-# Microsoft 365 / Entra ID / Intune Administration Lab
+# Active Directory Home Lab
 
 ## Overview
 
-I built this lab to get hands-on experience administering a Microsoft 365 environment instead of only studying the services individually.
+I built this lab to get hands-on experience administering a Windows domain instead of only studying Active Directory concepts.
 
-The lab started with a new Microsoft 365 Business Premium tenant for a fictional company, **Cobo Technologies**. From there I created users and groups in Microsoft Entra ID, enrolled a Windows 11 VM into Intune, deployed applications and policies, tested Conditional Access, managed BitLocker and Windows LAPS, and worked through several troubleshooting scenarios.
+The environment started with one Windows Server 2025 domain controller and one Windows 11 workstation. I configured the domain, DNS, DHCP, organizational units, security groups, file sharing, Group Policy, and PowerShell-based user provisioning.
 
-Most changes were first assigned to a small pilot group so I could verify the result before treating the configuration as complete.
+After the basic environment was working, I added a second domain controller and tested Active Directory, DNS, and DHCP redundancy by actually shutting down the primary server.
+
+I also intentionally broke several parts of the environment so I could practice diagnosing problems from the client and server sides.
 
 ### Main areas covered
 
-- Microsoft 365 administration
-- Microsoft Entra ID
-- Microsoft Intune
-- User and group management
-- Microsoft 365 licensing
-- Windows 11 Entra join and Intune enrollment
-- Device configuration
-- Compliance policies
-- Application deployment
-- Conditional Access and MFA
-- Windows Update
-- BitLocker
-- Windows LAPS
-- Sign-in troubleshooting
-- Remote device actions
+- Active Directory Domain Services
+- Windows Server 2025
+- DNS
+- DHCP
+- Group Policy
+- Organizational Units
+- Security groups
+- AGDLP permissions
+- SMB file sharing
+- NTFS permissions
+- PowerShell user provisioning
+- Active Directory replication
+- Domain controller redundancy
+- DHCP failover
+- Account lockout troubleshooting
+- Windows 11 domain administration
 
 ---
 
@@ -32,763 +35,848 @@ Most changes were first assigned to a small pilot group so I could verify the re
 
 | Component | Configuration |
 |---|---|
-| Organization | Cobo Technologies |
-| License | Microsoft 365 Business Premium |
-| Identity | Microsoft Entra ID |
-| Endpoint Management | Microsoft Intune |
-| Test Device | WIN11-INTUNE01 |
-| Operating System | Windows 11 Pro |
+| Domain | `cobo.test` |
+| Primary Domain Controller | `DC01` |
+| Secondary Domain Controller | `DC02` |
+| Server OS | Windows Server 2025 |
+| Client | `CLIENT01` |
+| Client OS | Windows 11 Pro |
+| Network | `10.10.10.0/24` |
+| Default Gateway | `10.10.10.1` |
+| DC01 | `10.10.10.10` |
+| DC02 | `10.10.10.11` |
+| DHCP Pool | `10.10.10.100 - 10.10.10.200` |
 | Virtualization | Oracle VirtualBox |
-| Primary Test User | Alex Rivera |
-| Pilot Device Group | DG-Windows-Pilot |
-| Conditional Access Pilot Group | SG-CA-MFA-Pilot |
 
 ---
 
-## Architecture
+## Network Layout
 
 ```text
-Microsoft 365 Business Premium
-            |
-            v
-     Microsoft Entra ID
-        |         |
-        |         +---- Users / Groups / MFA
-        |
-        +---- Conditional Access
-                    |
-                    v
-             Microsoft Intune
-              |     |     |
-              |     |     +---- Applications
-              |     +---------- Compliance
-              +---------------- Configuration
-                    |
-                    v
-             WIN11-INTUNE01
-             Windows 11 Pro
+                        AD-Lab
+                     10.10.10.0/24
+                           |
+                     10.10.10.1
+                  VirtualBox Gateway
+                           |
+          +----------------+----------------+
+          |                                 |
+        DC01                              DC02
+   10.10.10.10                       10.10.10.11
+   Windows Server 2025               Windows Server 2025
+          |                                 |
+   AD DS / DNS / DHCP                AD DS / DNS / DHCP
+          |                                 |
+          +--------- Replication -----------+
+          +-------- DHCP Failover ----------+
+                           |
+                           |
+                       CLIENT01
+                    Windows 11 Pro
+                     DHCP Client
+                           |
+                     cobo.test domain
 ```
 
 ---
 
-# 1. Tenant, Users, Groups, and Licensing
+# 1. Building the First Domain Controller
 
-I created a Microsoft 365 Business Premium tenant for Cobo Technologies and used it as the base for the rest of the lab.
-
-![Microsoft 365 tenant created](screenshots/01-microsoft-365-tenant-created.png)
-
-My first test user was **Alex Rivera**, an IT Support Technician.
-
-![First Entra user created](screenshots/02-entra-id-first-user-created.png)
-
-I created an IT security group and added Alex to it.
+I started with a Windows Server 2025 VM and renamed it:
 
 ```text
-SG-IT-Users
+DC01
 ```
 
-![IT security group](screenshots/03-entra-id-it-security-group.png)
+![DC01 renamed](screenshots/01-dc01-server-renamed.png)
 
-I also wanted to practice a faster provisioning method, so I used Microsoft's bulk-user CSV process to create several additional users.
-
-![Bulk Entra users created](screenshots/04-entra-id-bulk-users-created.png)
-
-I separated the users into basic departmental groups.
+Because a domain controller and DNS server need a predictable address, I configured DC01 with a static IPv4 address.
 
 ```text
-SG-IT-Users
-SG-HR-Users
-SG-Sales-Users
+IP Address: 10.10.10.10
+Subnet Mask: 255.255.255.0
+Default Gateway: 10.10.10.1
 ```
 
-![Department security groups](screenshots/05-entra-id-department-security-groups.png)
+![DC01 static IP configuration](screenshots/02-dc01-static-ip.png)
 
-I assigned Microsoft 365 Business Premium only where it was needed for the lab instead of licensing every test account.
+I installed Active Directory Domain Services and created the forest:
 
-![Microsoft 365 license assigned](screenshots/06-microsoft-365-license-assigned.png)
+```text
+cobo.test
+```
 
-One thing this cleared up for me was that creating an Entra account, assigning group membership, and assigning a Microsoft 365 license are three separate actions. A user can exist in Entra without having access to licensed Microsoft 365 services.
+![Active Directory domain created](screenshots/03-active-directory-domain-created.png)
+
+At this point DC01 was the only domain controller in the environment, so Active Directory and DNS both depended on this server.
 
 ---
 
-# 2. Intune Enrollment and Windows 11 Entra Join
+# 2. Organizational Units and Security Groups
 
-For automatic Intune enrollment, I scoped MDM enrollment to:
+I created an OU structure to keep users and computers organized instead of leaving everything in the default containers.
 
-```text
-SG-IT-Users
-```
-
-![Intune MDM enrollment scope](screenshots/07-intune-mdm-enrollment-scope.png)
-
-I then created a Windows 11 Pro VM named:
+Departments included:
 
 ```text
-WIN11-INTUNE01
+Accounting
+Human Resources
+IT
+Management
+Sales
 ```
 
-Alex signed into the VM with the work account during setup.
+I also created a separate location for workstation objects.
 
-On the VM, I used:
+![Organizational Unit structure](screenshots/04-organizational-unit-structure.png)
+
+I created departmental security groups rather than assigning permissions directly to individual users.
+
+![Security groups](screenshots/05-security-groups.png)
+
+For file access, I used an AGDLP-style permission structure.
+
+One example was:
+
+```text
+Alex Rivera
+     ↓
+GG_IT_Users
+     ↓
+DL_IT_Share_RW
+     ↓
+IT Shared Folder
+```
+
+The user belongs to a Global Group, the Global Group belongs to a Domain Local Group, and the Domain Local Group receives the actual resource permission.
+
+This made it easier to change access later without editing the file permissions every time an employee changes roles.
+
+---
+
+# 3. IT File Share
+
+On DC01, I created an IT department share:
+
+```text
+\\DC01\IT
+```
+
+I configured the file system and share permissions so access was controlled through the security groups I had already created.
+
+![IT share permissions](screenshots/06-it-share-permissions.png)
+
+Instead of granting Alex Rivera access directly, the permission came through:
+
+```text
+GG_IT_Users
+        ↓
+DL_IT_Share_RW
+        ↓
+IT Share
+```
+
+I later used this same group relationship for one of the troubleshooting exercises.
+
+---
+
+# 4. Joining CLIENT01 to the Domain
+
+I created a Windows 11 Pro VM named:
+
+```text
+CLIENT01
+```
+
+Before attempting the domain join, I checked its network configuration.
+
+![CLIENT01 network configuration](screenshots/07-client01-network-configuration.png)
+
+One of the most important parts of the setup was making sure CLIENT01 used the internal Active Directory DNS server.
+
+I tested name resolution before attempting the join.
+
+![CLIENT01 DNS validation](screenshots/08-client01-dns-validation.png)
+
+Once DNS was working, I joined CLIENT01 to:
+
+```text
+cobo.test
+```
+
+![CLIENT01 domain joined](screenshots/09-client01-domain-joined.png)
+
+I then checked Active Directory Users and Computers and confirmed the workstation object had been created.
+
+![CLIENT01 Active Directory object](screenshots/10-client01-active-directory-object.png)
+
+I signed into Windows using the domain account:
+
+```text
+COBO\arivera
+```
+
+![Domain user authentication](screenshots/11-domain-user-authentication.png)
+
+Finally, I tested access to the IT share from the workstation.
+
+![Domain user file share access](screenshots/12-domain-user-file-share-access.png)
+
+At this point I had a working path from:
+
+```text
+Domain account
+      ↓
+CLIENT01 authentication
+      ↓
+Security-group membership
+      ↓
+File-share permissions
+```
+
+---
+
+# 5. Group Policy
+
+I created Group Policy Objects for workstation configuration and user settings.
+
+## Workstation policy
+
+I linked a workstation security policy to the Workstations OU and verified that CLIENT01 actually received it.
+
+![Workstation GPO applied](screenshots/13-workstation-gpo-applied.png)
+
+I used tools such as:
 
 ```powershell
-dsregcmd /status
+gpupdate /force
 ```
 
-to confirm the join state.
-
-```text
-AzureAdJoined : YES
-EnterpriseJoined : NO
-DomainJoined : NO
-DeviceAuthStatus : SUCCESS
-```
-
-![Windows 11 Entra join verified](screenshots/08-windows-11-entra-join-verified.png)
-
-I also checked the device in Intune to make sure enrollment succeeded.
-
-![Intune enrollment verified](screenshots/09-intune-device-enrollment-verified.png)
-
-At this point the machine was both Microsoft Entra joined and managed by Intune.
-
----
-
-# 3. Device Configuration with Intune
-
-I created a Microsoft Edge Settings Catalog profile called:
-
-```text
-WIN-Edge-Homepage-Pilot
-```
-
-I assigned it to the device pilot group instead of targeting every device.
-
-The policy configured:
-
-```text
-Homepage: https://www.office.com
-Show Home button: Enabled
-New tab page as home page: Disabled
-```
-
-![Edge policy assigned](screenshots/10-intune-edge-policy-assigned.png)
-
-Before syncing, I opened `edge://policy` and confirmed that the new settings had not reached the endpoint yet.
-
-![Edge policy before sync](screenshots/11-intune-edge-policy-before-sync.png)
-
-After syncing the VM, I checked again and the Edge settings were present.
-
-![Edge policy verified](screenshots/12-intune-edge-policy-verified.png)
-
-This was a useful way to verify that I was looking at an actual policy change on the endpoint instead of assuming that creating the profile in Intune meant it had already applied.
-
----
-
-# 4. Compliance Policy and Firewall Troubleshooting
-
-I created a Windows compliance policy that required Microsoft Defender Firewall.
-
-![Compliance policy assigned](screenshots/13-intune-compliance-policy-assigned.png)
-
-With the firewall running normally, the VM was compliant.
-
-![Firewall compliance verified](screenshots/14-intune-firewall-compliance-verified.png)
-
-## Breaking the configuration
-
-I intentionally disabled the active Windows Firewall profile.
-
-![Firewall intentionally disabled](screenshots/15-firewall-active-profile-disabled.png)
-
-After the next Intune evaluation, the device changed to:
-
-```text
-Not compliant
-```
-
-![Device marked noncompliant](screenshots/16-intune-firewall-noncompliant.png)
-
-I opened the compliance details instead of stopping at the overall device status. Intune identified the failed setting as the firewall requirement.
-
-![Firewall failure diagnosed](screenshots/17-intune-firewall-failure-diagnosed.png)
-
-I turned the firewall back on, synced the machine again, and waited for Intune to reevaluate it.
-
-![Firewall compliance restored](screenshots/18-intune-firewall-compliance-restored.png)
-
-One thing I initially had to separate mentally was **configuration** versus **compliance**. The compliance policy detected that the firewall was off, but it did not turn the firewall back on for me. I had to correct the problem and then let Intune reevaluate the endpoint.
-
----
-
-# 5. Application Deployment
-
-## Company Portal
-
-I deployed Company Portal from the Microsoft Store through Intune and made it required for the pilot device group.
-
-![Company Portal assigned](screenshots/19-intune-company-portal-app-assigned.png)
-
-I then verified that the application installed on the VM.
-
-![Company Portal installed](screenshots/20-intune-company-portal-install-verified.png)
-
-## 7-Zip Win32 Deployment
-
-For a more traditional application deployment, I packaged 7-Zip as an Intune Win32 application.
-
-The source installer was:
-
-```text
-7z2603-x64.msi
-```
-
-I used Microsoft's Win32 Content Prep Tool to create:
-
-```text
-7z2603-x64.intunewin
-```
-
-The install command was:
-
-```cmd
-msiexec /i "7z2603-x64.msi" /qn /norestart
-```
-
-The uninstall command was:
-
-```cmd
-msiexec /x "{23170F69-40C1-2702-2603-000001000000}" /qn /norestart
-```
-
-I configured the application for:
-
-- x64 Windows
-- System install context
-- Silent installation
-- MSI product-code detection
-- Required deployment to the pilot device group
-
-![7-Zip Win32 app assigned](screenshots/21-intune-win32-7zip-assigned.png)
-
-The application installed successfully on the VM.
-
-![7-Zip installation verified](screenshots/22-intune-win32-7zip-install-verified.png)
-
-The Intune reporting status took longer to update than the actual installation. That was a good reminder to check both the endpoint and the Intune portal when troubleshooting an app deployment.
-
----
-
-# 6. Conditional Access and MFA
-
-While moving from Security Defaults to Conditional Access, Microsoft created several Microsoft-managed policies in the tenant. I left those policies enabled and created a separate pilot policy for my own testing.
-
-![Conditional Access policy overview](screenshots/23-conditional-access-policy-overview.png)
-
-My custom policy was:
-
-```text
-CA-Pilot-Require-MFA
-```
-
-It targeted Alex through:
-
-```text
-SG-CA-MFA-Pilot
-```
-
-I kept the policy in **Report-only** mode while testing it.
-
-![MFA pilot policy](screenshots/24-conditional-access-mfa-pilot-report-only.png)
-
-The grant control required MFA.
-
-![MFA grant control](screenshots/25-conditional-access-mfa-grant-control.png)
-
-## What If test
-
-Before relying on a real sign-in, I used the Conditional Access What If tool to confirm that Alex matched the policy.
-
-![Conditional Access What If verified](screenshots/26-conditional-access-what-if-verified.png)
-
-## Checking a real sign-in
-
-Alex already had MFA registered and Windows Hello for Business configured.
-
-The authentication details showed that Windows Hello or a previously satisfied MFA claim could meet the authentication requirement without forcing a brand-new Authenticator prompt every time.
-
-![Windows Hello authentication verified](screenshots/27-windows-hello-authentication-verified.png)
-
-I then checked the Conditional Access results for a real OfficeHome sign-in.
-
-```text
-CA-Pilot-Require-MFA
-Report-only: Success
-```
-
-![Conditional Access report-only success](screenshots/28-conditional-access-report-only-success.png)
-
-I kept this policy in Report-only because the purpose of the lab was to verify how it evaluated sign-ins without accidentally locking myself out of the tenant.
-
----
-
-# 7. Conditional Access Based on Device Compliance
-
-I created another pilot policy:
-
-```text
-CA-Pilot-Require-Compliant-Windows-Device
-```
-
-![Compliant device policy](screenshots/29-conditional-access-compliant-device-policy.png)
-
-I limited the device platform to Windows.
-
-![Windows platform condition](screenshots/30-conditional-access-windows-platform-condition.png)
-
-The grant requirement was:
-
-```text
-Require device to be marked as compliant
-```
-
-![Compliant-device grant control](screenshots/31-conditional-access-compliant-device-grant.png)
-
-## Healthy test
-
-With the firewall enabled and the VM compliant, the policy evaluated successfully.
-
-![Compliant device success](screenshots/32-conditional-access-compliant-device-success.png)
-
-## Failure test
-
-I disabled the firewall again so the device would become noncompliant.
-
-The next sign-in showed:
-
-```text
-CA-Pilot-Require-Compliant-Windows-Device
-Report-only: Failure
-```
-
-![Noncompliant device Conditional Access failure](screenshots/33-conditional-access-noncompliant-device-failure.png)
-
-I also checked the device information included with the sign-in.
-
-```text
-Managed: Yes
-Compliant: No
-Join Type: Azure AD joined
-```
-
-![Noncompliant managed device verified](screenshots/34-conditional-access-device-noncompliant-verified.png)
-
-The `Azure AD joined` label is older Microsoft wording that still appears in parts of the portal.
-
-### An issue I ran into
-
-My first attempt at this test was done in an InPrivate browser window. The sign-in did not include the managed device identity, so the result was not testing what I thought it was testing.
-
-I repeated the test through the normal Edge profile signed into the managed VM. The device ID was then present and Entra correctly showed:
-
-```text
-Managed: Yes
-Compliant: No
-```
-
-That let me confirm that the Conditional Access failure was actually caused by compliance status.
-
-After restoring the firewall and syncing the VM, the next sign-in returned to:
-
-```text
-Report-only: Success
-```
-
-![Conditional Access compliance restored](screenshots/35-conditional-access-compliance-restored.png)
-
-This was one of the more useful parts of the lab because it tied together endpoint security, Intune compliance, device identity, and Entra sign-in decisions.
-
----
-
-# 8. Windows Update Ring
-
-I created:
-
-```text
-WIN-Update-Ring-Pilot
-```
-
-and assigned it to the pilot device group.
-
-Some of the settings I used were:
-
-```text
-Microsoft product updates: Allow
-Windows drivers: Allow
-
-Quality update deferral: 0 days
-Feature update deferral: 0 days
-
-Active hours:
-8:00 AM - 5:00 PM
-
-Quality update deadline: 2 days
-Feature update deadline: 7 days
-Grace period: 1 day
-```
-
-![Windows Update ring settings](screenshots/36-intune-windows-update-ring-settings.png)
-
-I did not rely only on the Intune configuration page. On `WIN11-INTUNE01`, I opened:
-
-```text
-Windows Update
-→ Advanced options
-→ Configured update policies
-```
-
-Windows showed the policies as coming from Mobile Device Management.
-
-![Windows Update endpoint verification](screenshots/37-windows-update-policy-endpoint-verified.png)
-
-I also checked the individual update settings on the endpoint.
-
-![Windows Update policy details](screenshots/38-windows-update-policy-details-verified.png)
-
----
-
-# 9. BitLocker Management
-
-Before creating a BitLocker policy, I checked the VM itself.
+and:
 
 ```powershell
-Get-Tpm | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated
+gpresult
 ```
+
+to check policy processing instead of assuming that creating the GPO meant the client had received it.
+
+## IT drive mapping
+
+I also created a user policy that mapped:
+
+```text
+I:
+```
+
+to:
+
+```text
+\\DC01\IT
+```
+
+![IT drive mapping GPO](screenshots/14-it-drive-mapping-gpo.png)
+
+I signed into CLIENT01 with Alex's account and verified that the mapped drive appeared.
+
+![Drive mapping verified](screenshots/15-user-gpo-drive-mapping-verified.png)
+
+---
+
+# 6. DHCP
+
+I installed the DHCP Server role on DC01 and created a scope for the lab network.
+
+```text
+Network: 10.10.10.0/24
+Pool: 10.10.10.100 - 10.10.10.200
+Gateway: 10.10.10.1
+DNS Server: 10.10.10.10
+DNS Domain: cobo.test
+```
+
+![DHCP scope configuration](screenshots/16-dhcp-scope-configuration.png)
+
+CLIENT01 received an address from the new scope.
+
+![CLIENT01 DHCP lease](screenshots/17-client01-dhcp-lease.png)
+
+I also checked the client configuration directly to make sure DHCP had supplied the expected address, gateway, DNS server, and domain information.
+
+![CLIENT01 DHCP configuration verified](screenshots/18-client01-dhcp-configuration-verified.png)
+
+---
+
+# 7. PowerShell User Provisioning
+
+After creating users manually, I wanted a faster way to provision multiple employees.
+
+I wrote a PowerShell script:
+
+```text
+scripts/New-COBOUsers.ps1
+```
+
+The script reads employee information from:
+
+```text
+data/new-users.csv
+```
+
+and handles the account setup automatically.
+
+The script can:
+
+- Generate usernames
+- Create Active Directory users
+- Set department information
+- Place users into the correct OU
+- Add users to departmental security groups
+- Require a password change at first sign-in
+- Skip accounts that already exist
+- Catch provisioning errors
+- Export a results report
+
+After running the script, I checked Active Directory to verify that the accounts were actually created.
+
+![Automated Active Directory users](screenshots/19-automated-ad-users-verified.png)
+
+I also checked the resulting group membership.
+
+![Security group membership verified](screenshots/20-security-group-membership-verified.png)
+
+The script returned provisioning results after processing the CSV.
+
+![PowerShell provisioning results](screenshots/21-powershell-provisioning-results.png)
+
+I then checked the exported report.
+
+![Provisioning report verified](screenshots/22-provisioning-report-verified.png)
+
+The script is included in the repository:
+
+[`New-COBOUsers.ps1`](scripts/New-COBOUsers.ps1)
+
+The sample CSV is also included:
+
+[`new-users.csv`](data/new-users.csv)
+
+---
+
+# 8. DNS
+
+I configured both forward and reverse DNS lookup.
+
+The forward record allowed:
+
+```text
+dc01.cobo.test
+```
+
+to resolve to:
+
+```text
+10.10.10.10
+```
+
+I also created the reverse lookup zone and PTR record.
+
+![DNS reverse lookup zone](screenshots/23-dns-reverse-lookup-zone.png)
+
+I tested both directions:
+
+```text
+dc01.cobo.test → 10.10.10.10
+10.10.10.10 → dc01.cobo.test
+```
+
+![DNS forward and reverse lookup verified](screenshots/24-dns-forward-reverse-lookup-verified.png)
+
+DNS ended up being one of the most important parts of the lab because Active Directory depended on it for more than basic hostname lookup.
+
+---
+
+# 9. Troubleshooting: Incorrect DNS Server
+
+For the first troubleshooting exercise, I intentionally changed CLIENT01 to use:
+
+```text
+8.8.8.8
+```
+
+instead of the internal DNS server.
+
+The workstation still had a valid IP address and could reach DC01 by IP, but internal domain name resolution and Active Directory discovery stopped working.
+
+![DNS troubleshooting failure](screenshots/25-troubleshooting-dns-failure.png)
+
+Because IP connectivity was still working, I did not treat it as a general network failure. The problem was DNS.
+
+I restored the proper DNS configuration, flushed the cache, and tested the domain names again.
+
+![DNS troubleshooting resolved](screenshots/26-troubleshooting-dns-resolved.png)
+
+This was a useful distinction:
+
+```text
+Can reach server by IP
+        +
+Cannot resolve domain services
+        ↓
+Investigate DNS
+```
+
+---
+
+# 10. Troubleshooting: Group Policy Not Applying
+
+I intentionally moved CLIENT01 out of the Workstations OU and into the default Computers container.
+
+The machine remained joined to the domain and network connectivity still worked, but the workstation GPO was no longer in scope.
+
+![GPO not applied](screenshots/27-troubleshooting-gpo-not-applied.png)
+
+I moved CLIENT01 back into the correct OU and refreshed Group Policy.
 
 ```powershell
-Confirm-SecureBootUEFI
+gpupdate /force
 ```
+
+Afterward, `gpresult` showed the workstation policy again.
+
+![GPO restored](screenshots/28-troubleshooting-gpo-restored.png)
+
+The problem was not that Group Policy itself was broken. The computer object had simply been moved outside the location where the policy was linked.
+
+---
+
+# 11. Troubleshooting: File Share Access Denied
+
+For the file-share test, I removed:
+
+```text
+GG_IT_Users
+```
+
+from:
+
+```text
+DL_IT_Share_RW
+```
+
+After refreshing the user's security token, Alex could still reach DC01 over SMB, but:
+
+```text
+\\DC01\IT
+```
+
+returned:
+
+```text
+Access Denied
+```
+
+![File share access denied](screenshots/29-troubleshooting-file-share-access-denied.png)
+
+Since the workstation could still communicate with the file server, I focused on authorization rather than network connectivity.
+
+I restored the group relationship with:
 
 ```powershell
-Get-ComputerInfo | Select-Object BiosFirmwareType
+Add-ADGroupMember DL_IT_Share_RW -Members GG_IT_Users
 ```
 
-```cmd
-reagentc /info
+![Permission group restored](screenshots/30a-file-share-permission-group-restored.png)
+
+After signing out and back in again, the user's new security token included the restored group membership.
+
+Access to the share returned.
+
+![File share access restored](screenshots/30-troubleshooting-file-share-access-restored.png)
+
+This exercise made the AGDLP structure much easier to understand because breaking one group relationship removed the user's access without changing the NTFS permission itself.
+
+---
+
+# 12. Account Lockout and Recovery
+
+I configured a domain account-lockout policy:
+
+```text
+Account lockout threshold: 5 attempts
+Account lockout duration: 15 minutes
+Reset counter after: 15 minutes
+```
+
+![Account lockout policy configured](screenshots/31-account-lockout-policy-configured.png)
+
+I entered the wrong password repeatedly for:
+
+```text
+arivera
+```
+
+until the account locked.
+
+On the domain controller, I checked the account with:
+
+```powershell
+Get-ADUser arivera -Properties LockedOut
+```
+
+and:
+
+```powershell
+Search-ADAccount -LockedOut
+```
+
+![Account locked](screenshots/32-troubleshooting-account-locked.png)
+
+I unlocked it with:
+
+```powershell
+Unlock-ADAccount -Identity arivera
+```
+
+and checked the account again.
+
+![Account lockout restored](screenshots/33-account-lockout-restored.png)
+
+---
+
+# 13. Adding a Second Domain Controller
+
+The original environment depended entirely on DC01.
+
+If DC01 was unavailable, the lab lost:
+
+```text
+Active Directory
+DNS
+DHCP
+```
+
+I added a second Windows Server 2025 VM named:
+
+```text
+DC02
+```
+
+and gave it the static address:
+
+```text
+10.10.10.11
+```
+
+Before promoting it, I joined DC02 to `cobo.test` as a normal domain member.
+
+![DC02 domain member network configuration](screenshots/34-dc02-domain-member-network-config.png)
+
+I then installed Active Directory Domain Services and promoted DC02 as an additional writable domain controller and DNS server.
+
+## Replication
+
+After promotion, I checked replication with:
+
+```powershell
+repadmin /replsummary
+```
+
+Both domain controllers reported zero replication failures.
+
+![DC02 replication verified](screenshots/35-dc02-domain-controller-replication.png)
+
+I did more than check the replication summary. I queried DC02 directly for Active Directory and DNS information.
+
+Examples included:
+
+```powershell
+Get-ADUser arivera -Server DC02.cobo.test -Properties Department
 ```
 
 ```powershell
-Get-BitLockerVolume -MountPoint "C:"
+Get-ADGroupMember GG_IT_Users -Server DC02.cobo.test
 ```
-
-The VM had:
-
-```text
-TPM present: True
-TPM ready: True
-TPM enabled: True
-TPM activated: True
-
-Secure Boot: True
-Firmware: UEFI
-Windows RE: Enabled
-
-VolumeStatus: FullyEncrypted
-ProtectionStatus: On
-EncryptionPercentage: 100
-EncryptionMethod: XtsAes128
-```
-
-![BitLocker prerequisite and encryption status](screenshots/39-bitlocker-preflight-and-encryption-status.png)
-
-The VM was already encrypted before I created the Intune policy. I did not decrypt it just to make the lab start from an artificial clean state. Instead, I treated it as an already encrypted corporate device and configured Intune to manage the existing BitLocker setup.
-
-I created:
-
-```text
-WIN-BitLocker-Pilot
-```
-
-![BitLocker policy assigned](screenshots/40-intune-bitlocker-policy-assigned.png)
-
-I configured TPM-based startup settings.
-
-![BitLocker TPM settings](screenshots/41-intune-bitlocker-tpm-settings.png)
-
-I also configured recovery behavior and required the recovery information to be stored centrally.
-
-![BitLocker recovery settings](screenshots/42-intune-bitlocker-recovery-settings.png)
-
-I verified that a recovery-key record existed in Intune without exposing the actual recovery password.
-
-![BitLocker recovery key escrow verified](screenshots/43-bitlocker-recovery-key-escrow-verified.png)
-
-The policy later reported:
-
-```text
-Succeeded: 1
-Errors: 0
-Conflicts: 0
-```
-
-![BitLocker policy succeeded](screenshots/44-intune-bitlocker-policy-succeeded.png)
-
----
-
-# 10. Help Desk Account Troubleshooting
-
-I wanted one section of the lab to look more like a normal help desk ticket instead of another policy deployment.
-
-I created a new employee:
-
-```text
-Elena Marquez
-Procurement Coordinator
-Operations
-```
-
-![Help desk user provisioned](screenshots/45-entra-helpdesk-user-provisioned.png)
-
-I assigned Microsoft 365 Business Premium to the account.
-
-![Business Premium license assigned](screenshots/46-microsoft-365-business-premium-license-assigned.png)
-
-After completing the initial password change and MFA registration, I confirmed that Elena could sign in successfully.
-
-![Help desk baseline sign-in](screenshots/47-entra-helpdesk-baseline-signin-success.png)
-
-## Simulated account problem
-
-I blocked Elena from signing in through the Microsoft 365 admin tools.
-
-![User sign-in blocked](screenshots/48-helpdesk-user-signin-blocked.png)
-
-I then attempted a new sign-in and confirmed that access failed.
-
-![Blocked user sign-in failure](screenshots/49-helpdesk-blocked-user-signin-failure.png)
-
-Instead of treating the user-facing message as the diagnosis, I checked the Entra sign-in logs.
-
-The failure showed:
-
-```text
-Error code: 50057
-Failure reason: The user account is disabled.
-```
-
-![Blocked sign-in diagnosed](screenshots/50-entra-helpdesk-blocked-signin-diagnosed.png)
-
-I restored the account.
-
-![User sign-in restored](screenshots/51-helpdesk-user-signin-restored.png)
-
-A new sign-in succeeded.
-
-![Restored sign-in verified](screenshots/52-entra-helpdesk-signin-restored-verified.png)
-
-This was a simple scenario, but it was useful because the message shown to the user was less specific than the information available to the administrator in the sign-in logs.
-
----
-
-# 11. Windows LAPS
-
-I enabled Microsoft Entra Windows LAPS for the tenant.
-
-![Microsoft Entra Windows LAPS enabled](screenshots/53-entra-windows-laps-enabled.png)
-
-I created a policy called:
-
-```text
-WIN-LAPS-Pilot
-```
-
-Some of the main settings were:
-
-```text
-Backup directory: Microsoft Entra ID only
-Password age: 30 days
-Password length: 20 characters
-Automatic account management: Enabled
-Managed account: Cobo-LAPSAdmin
-```
-
-![Windows LAPS policy configured](screenshots/54-intune-windows-laps-policy-configured.png)
-
-After the device processed the policy, Windows created the managed local administrator account.
-
-I checked it with:
 
 ```powershell
-Get-LocalUser | Select-Object Name,Enabled,Description
+Resolve-DnsName dc01.cobo.test -Server 10.10.10.11
 ```
 
-![LAPS local administrator created](screenshots/55-windows-laps-local-admin-created.png)
-
-The account did not appear immediately after the policy was created. I had to sync the VM and wait for the policy to process before verifying it locally.
-
-I then checked Intune and confirmed that the LAPS password record had been backed up. The actual password is not shown in the screenshot or repository.
-
-![LAPS password backup verified](screenshots/56-laps-password-backup-verified.png)
+![DC02 Active Directory and DNS replication verified](screenshots/36-dc02-ad-dns-replication-verified.png)
 
 ---
 
-# 12. Remote Device Action
+# 14. Redundant DNS
 
-For the last exercise, I sent a remote restart to:
+Once DC02 was working as a DNS server, I updated DHCP so CLIENT01 received both domain DNS servers.
 
 ```text
-WIN11-INTUNE01
+Primary DNS: 10.10.10.10
+Secondary DNS: 10.10.10.11
 ```
 
-from Intune.
+![CLIENT01 redundant DNS configuration](screenshots/37-client01-redundant-dns-configuration.png)
 
-![Remote restart initiated](screenshots/57-intune-remote-restart-initiated.png)
-
-The VM received the command and displayed a Windows notification that the device administrator had scheduled a restart.
-
-![Remote restart received](screenshots/58-intune-remote-restart-received.png)
-
-The Intune Device action status page did not give me a useful completed status afterward, so I used the endpoint receiving the restart command as my verification instead of adding another screenshot that did not show anything useful.
+I wanted to test whether that redundancy actually worked instead of just seeing two addresses in `ipconfig`.
 
 ---
 
-# Problems I Ran Into
+# 15. Domain Controller Failover Test
 
-A few parts of the lab did not behave exactly the way I expected on the first attempt.
+I shut down DC01.
 
-| Problem | What I found |
+On CLIENT01, I forced domain-controller discovery:
+
+```powershell
+nltest /dsgetdc:cobo.test /force
+```
+
+The workstation found:
+
+```text
+DC: \\DC02.cobo.test
+Address: \\10.10.10.11
+```
+
+I also checked the secure channel:
+
+```powershell
+nltest /sc_verify:cobo.test
+```
+
+The check succeeded while DC01 was offline.
+
+![DC02 domain failover verified](screenshots/38-dc02-domain-failover-verified.png)
+
+That gave me much more confidence in the second domain controller than simply seeing it listed in Active Directory Sites and Services.
+
+After the test, I brought DC01 back online and checked replication again.
+
+---
+
+# 16. DHCP Failover
+
+Active Directory and DNS now had redundancy, but DHCP was still dependent on DC01.
+
+I installed and authorized DHCP on DC02 and created a failover relationship using the existing client scope.
+
+The relationship was configured as:
+
+```text
+Relationship: COBO-DHCP-Failover
+Partner: DC02.cobo.test
+Mode: Load Balance
+Distribution: 50/50
+Maximum Client Lead Time: 1 hour
+Scope: 10.10.10.0/24
+```
+
+I checked the relationship with:
+
+```powershell
+Get-DhcpServerv4Failover -ComputerName DC01 |
+    Format-List Name,PartnerServer,Mode,State,LoadBalancePercent,MaxClientLeadTime
+```
+
+I also confirmed that the scope was present on DC02:
+
+```powershell
+Get-DhcpServerv4Scope -ComputerName DC02
+```
+
+![DHCP failover relationship](screenshots/39-dhcp-failover-relationship.png)
+
+## Testing it
+
+I shut down DC01 again.
+
+On CLIENT01, I forced a new DHCP request:
+
+```powershell
+ipconfig /release
+ipconfig /renew
+ipconfig /all
+```
+
+CLIENT01 received its lease from:
+
+```text
+DHCP Server: 10.10.10.11
+```
+
+![DHCP failover through DC02](screenshots/40-dhcp-failover-dc02-lease.png)
+
+That confirmed DC02 could continue servicing DHCP clients while DC01 was unavailable.
+
+After bringing DC01 back online, I checked both Active Directory replication and the DHCP relationship again to make sure the environment recovered normally.
+
+---
+
+# Problems I Intentionally Tested
+
+A large part of this lab was learning how to narrow down a problem instead of changing settings randomly.
+
+| Problem | What pointed me toward the cause |
 |---|---|
-| Conditional Access test did not identify the device correctly | I was using InPrivate mode, so I repeated the test from the normal managed Edge profile |
-| Firewall compliance changed slowly | The endpoint state changed before Intune reporting fully caught up |
-| 7-Zip showed installed locally before Intune reported it | Intune reporting was delayed |
-| Windows LAPS account was not created immediately | The device needed another sync and time to process the policy |
-| Remote restart status was not useful in Intune | The Windows VM receiving the administrator restart notification confirmed the action reached the endpoint |
+| Internal DNS stopped working | IP connectivity still worked, but domain names and AD discovery failed |
+| Workstation GPO disappeared | CLIENT01 was healthy but had been moved outside the linked OU |
+| File share returned Access Denied | SMB connectivity worked, so I checked group-based authorization |
+| User could not authenticate | The account showed as locked in Active Directory |
+| DC01 was offline | CLIENT01 discovered DC02 and kept a valid domain secure channel |
+| DHCP on DC01 was unavailable | CLIENT01 successfully renewed from DC02 |
 
-These were useful because they forced me to verify the result from more than one place instead of assuming that the portal always updates immediately.
+The main troubleshooting pattern I used was:
+
+```text
+Check what still works
+        ↓
+Narrow down the affected service
+        ↓
+Verify the suspected cause
+        ↓
+Make one correction
+        ↓
+Test again
+```
 
 ---
 
-# Commands Used
+# Commands I Used Frequently
 
-Some of the Windows and PowerShell commands I used during the lab included:
+### Active Directory
 
 ```powershell
-dsregcmd /status
+Get-ADUser
+Get-ADGroupMember
+Add-ADGroupMember
+Unlock-ADAccount
+Search-ADAccount
 ```
 
-```powershell
-Get-Tpm
-```
+### Group Policy
 
 ```powershell
-Confirm-SecureBootUEFI
+gpupdate /force
+gpresult
 ```
 
+### DNS
+
 ```powershell
-Get-ComputerInfo | Select-Object BiosFirmwareType
+Resolve-DnsName
+ipconfig /flushdns
+```
+
+### Domain Controller Testing
+
+```powershell
+repadmin /replsummary
+nltest /dsgetdc:cobo.test /force
+nltest /sc_verify:cobo.test
+```
+
+### DHCP
+
+```powershell
+Get-DhcpServerv4Scope
+Get-DhcpServerv4Failover
 ```
 
 ```cmd
-reagentc /info
-```
-
-```powershell
-Get-BitLockerVolume -MountPoint "C:"
-```
-
-```powershell
-Get-LocalUser | Select-Object Name,Enabled,Description
-```
-
-For the Win32 deployment:
-
-```cmd
-msiexec /i "7z2603-x64.msi" /qn /norestart
-```
-
-```cmd
-msiexec /x "{23170F69-40C1-2702-2603-000001000000}" /qn /norestart
+ipconfig /release
+ipconfig /renew
+ipconfig /all
 ```
 
 ---
 
 # What I Took Away From the Lab
 
-The biggest thing I learned from this project was that Microsoft cloud administration is usually a chain of related systems rather than one isolated setting.
+The biggest thing this project changed for me was how I think about Active Directory dependencies.
 
-For example, one Conditional Access test depended on all of these being correct:
+A domain login is not just "Active Directory working." A workstation may depend on several services at the same time:
 
 ```text
-Windows device
-      ↓
-Microsoft Entra device identity
-      ↓
-Intune enrollment
-      ↓
-Intune compliance
-      ↓
-Conditional Access evaluation
-      ↓
-User sign-in
+CLIENT01
+   |
+   +---- IP configuration
+   |
+   +---- DNS
+   |
+   +---- Domain Controller discovery
+   |
+   +---- User authentication
+   |
+   +---- Group membership
+   |
+   +---- Group Policy
+   |
+   +---- Resource permissions
 ```
 
-I also became much more comfortable checking both sides of a change. Creating a policy in Intune is only half of the work. I still need to verify what the Windows endpoint actually received.
+The troubleshooting exercises helped me separate those layers.
 
-The same applied to troubleshooting. Intune, Entra sign-in logs, Windows settings, PowerShell output, and application state can all show different parts of the same problem.
+For example, being able to ping a server did not mean Active Directory was healthy if DNS was wrong. Likewise, being able to connect to TCP 445 did not mean a user was authorized to access an SMB share.
+
+Adding DC02 was also useful because I could test redundancy instead of only configuring it. Shutting down DC01 and confirming that authentication, DNS, and DHCP could continue through DC02 made the purpose of the second server much clearer.
 
 ---
 
 # Skills Used
 
-- Microsoft 365 administration
-- Microsoft Entra ID
-- Microsoft Intune
-- Windows 11 administration
-- User and group management
-- Microsoft 365 licensing
-- Device enrollment
-- Settings Catalog policies
-- Device compliance
-- Conditional Access
-- MFA
-- Microsoft Store app deployment
-- Win32 app packaging and deployment
-- MSI installation
-- Windows Update Rings
-- BitLocker
-- Windows LAPS
-- Entra sign-in logs
-- Help desk troubleshooting
-- Remote endpoint administration
+- Windows Server 2025 administration
+- Active Directory Domain Services
+- User and computer administration
+- Organizational Unit design
+- Security groups
+- AGDLP permissions
+- Group Policy
+- DNS administration
+- DNS troubleshooting
+- DHCP administration
+- DHCP failover
+- Active Directory replication
+- Domain controller redundancy
+- SMB file sharing
+- NTFS permissions
+- Account lockout administration
 - PowerShell
+- CSV-based user provisioning
+- Windows 11 domain administration
+- Network troubleshooting
+- Identity and access troubleshooting
 
 ---
 
 # Repository Structure
 
 ```text
-microsoft-365-entra-intune-lab/
+ActiveDirectoryLab/
 │
 ├── README.md
 │
+├── scripts/
+│   └── New-COBOUsers.ps1
+│
+├── data/
+│   └── new-users.csv
+│
 └── screenshots/
-    ├── 01-microsoft-365-tenant-created.png
-    ├── 02-entra-id-first-user-created.png
-    ├── 03-entra-id-it-security-group.png
+    ├── 01-dc01-server-renamed.png
+    ├── 02-dc01-static-ip.png
+    ├── 03-active-directory-domain-created.png
     ├── ...
-    ├── 56-laps-password-backup-verified.png
-    ├── 57-intune-remote-restart-initiated.png
-    └── 58-intune-remote-restart-received.png
+    ├── 38-dc02-domain-failover-verified.png
+    ├── 39-dhcp-failover-relationship.png
+    └── 40-dhcp-failover-dc02-lease.png
 ```
 
 ---
 
 # Security
 
-The repository does not contain passwords, temporary passwords, MFA secrets, BitLocker recovery passwords, Windows LAPS passwords, or billing information.
+The repository does not contain real user passwords or production credentials.
 
-The bulk-user CSV, 7-Zip installer, and `.intunewin` package were used inside the lab but are not included in the repository.
+The users, domain, network, company information, and employee data in this project were created for the lab environment.
 
 ---
 
@@ -796,4 +884,4 @@ The bulk-user CSV, 7-Zip installer, and `.intunewin` package were used inside th
 
 **Completed**
 
-The lab covers the full path from creating cloud identities and enrolling a Windows device through policy management, application deployment, access control, troubleshooting, credential management, and remote administration.
+The finished environment includes two domain controllers, redundant DNS, load-balanced DHCP failover, centralized users and groups, Group Policy, shared-resource permissions, PowerShell provisioning, and tested client/server troubleshooting scenarios.

@@ -10,6 +10,26 @@ After the basic environment was working, I added a second domain controller and 
 
 I also intentionally broke several parts of the environment so I could practice diagnosing problems from the client and server sides.
 
+### Recruiter Snapshot
+
+| Capability | Verified hands-on work |
+|---|---|
+| Identity and access | Created organizational units, domain users, global and domain local security groups, and AGDLP-based file permissions |
+| Endpoint support | Joined a Windows 11 client to `cobo.test`, validated domain sign-in, mapped a departmental drive, and confirmed Group Policy application |
+| User provisioning | Wrote a PowerShell workflow that reads a CSV, creates users, assigns the correct OU and security group, skips existing accounts, and exports results |
+| Core services | Configured Active Directory-integrated DNS, forward and reverse lookup, DHCP scope options, and Windows client addressing |
+| Resilience | Added a second writable domain controller and DNS server, configured 50/50 DHCP failover, and verified authentication, secure-channel discovery, DNS, and DHCP renewal while DC01 was offline |
+| Troubleshooting | Diagnosed incorrect client DNS, a computer outside the GPO-linked OU, broken group-based file access, an account lockout, and primary-server outages |
+
+### Relevance to Entry-Level IT Support and Systems Administration
+
+- Mirrors common support work such as onboarding users, assigning access, joining endpoints to a domain, resolving account lockouts, validating mapped drives, and troubleshooting DNS, DHCP, and Group Policy.
+- Uses client and server evidence instead of assuming that a configuration succeeded. Validation included `gpresult`, `Resolve-DnsName`, `repadmin /replsummary`, `nltest`, Active Directory PowerShell cmdlets, and forced DHCP renewal.
+- Demonstrates service dependency awareness. A client can have basic IP connectivity while domain discovery, policy processing, authentication, or authorization still fails.
+- Includes reproducible evidence through 40 numbered screenshots, the PowerShell provisioning script, and sample CSV data.
+
+> **Scope:** This is a controlled home lab built for hands-on learning. It demonstrates foundational administration and troubleshooting, not production enterprise ownership.
+
 ### Main areas covered
 
 - Active Directory Domain Services
